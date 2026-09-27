@@ -6,6 +6,7 @@ from .src.github.exceptions import (
     RateLimitError,
     NetworkError
 )
+from .src.github.models import RepoModel
 
 # #===============================exceptiopns and status code testing=================================
 # def demo_success(client:GitHubClient):
@@ -103,79 +104,181 @@ from .src.github.exceptions import (
 # #=======================================================================================
 
 # #==================================models testing=======================================
-def demo_user_model(client:GitHubClient):
+# def demo_user_model(client:GitHubClient):
+#     print("=" * 50)
+#     print("USER MODEL")
+#     print("=" * 50)
+#     me = client.get_authenticated_user()
+
+#     # Attribute access — not dict key access
+#     # Your editor will autocomplete these
+#     print(f"Login        : {me.login}")
+#     print(f"Display Name : {me.display_name()}")   # method on the model
+#     print(f"Account Type : {me.account_type}")
+#     print(f"Member Since : {me.created_at.strftime('%B %Y')}")  # datetime object
+#     print(f"Public Repos : {me.public_repos}")
+
+#     # Notice: me.created_at is a real datetime object, not a string
+#     print(f"Type of created_at : {type(me.created_at)}")
+
+
+# def demo_repo_model(client):
+#     print("\n" + "=" * 50)
+#     print("REPO MODEL")
+#     print("=" * 50)
+#     repo = client.get_repo("PrathameshDevkar", "mcp_a2a_multiagent")
+
+#     print(f"Name        : {repo.name}")
+#     print(f"Owner Login : {repo.owner.login}")     # nested model access
+#     print(f"Private     : {repo.private}")
+#     print(f"Created     : {repo.created_at.strftime('%d %b %Y')}")
+#     print(f"Active      : {repo.is_active()}")     # method on model
+#     print(f"Summary     : {repo.summary()}")        # method on model
+
+
+# def demo_language_model(client):
+#     print("\n" + "=" * 50)
+#     print("LANGUAGES MODEL")
+#     print("=" * 50)
+#     langs = client.get_repo_languages("PrathameshDevkar", "mcp_a2a_multiagent")
+
+#     print(f"Primary Language : {langs.primary_language()}")
+#     print(f"Total Bytes      : {langs.total_bytes():,}")
+#     print("Breakdown:")
+#     for lang, pct in langs.percentages().items():
+#         print(f"  {lang:<15} {pct}%")
+
+
+# def demo_model_safety(client:GitHubClient):
+#     print("\n" + "=" * 50)
+#     print("MODEL SAFETY — TYPO CAUGHT IMMEDIATELY")
+#     print("=" * 50)
+#     repo = client.get_repo("PrathameshDevkar", "mcp_a2a_multiagent")
+
+#     # With raw dict: repo["naem"] → KeyError deep in your code
+#     # With Pydantic: repo.naem → AttributeError immediately
+#     # Your editor even underlines it before you run the code
+#     try:
+#         _ = repo.nam           # typo — 'naem' doesn't exist
+#     except AttributeError as e:
+#         print(f"Typo caught: {e}")
+
+#     # Optional field handled safely
+#     # description can be None — no KeyError, no crash
+#     desc = repo.description or "No description provided"
+#     print(f"Description : {desc}")
+
+
+# def demo_repo_list(client):
+#     print("\n" + "=" * 50)
+#     print("REPO LIST — TYPED OBJECTS")
+#     print("=" * 50)
+#     repos = client.get_my_repos(per_page=5)
+#     for repo in repos:
+#         # Each repo is a RepoModel — full attribute access + methods
+#         print(repo.summary())
+
+#=======================================================================================
+
+#===============================Pagination===========================================
+
+def demo_all_repos(client):
     print("=" * 50)
-    print("USER MODEL")
+    print("ALL REPOS — MULTI-PAGE FETCH")
     print("=" * 50)
-    me = client.get_authenticated_user()
 
-    # Attribute access — not dict key access
-    # Your editor will autocomplete these
-    print(f"Login        : {me.login}")
-    print(f"Display Name : {me.display_name()}")   # method on the model
-    print(f"Account Type : {me.account_type}")
-    print(f"Member Since : {me.created_at.strftime('%B %Y')}")  # datetime object
-    print(f"Public Repos : {me.public_repos}")
+    # per_page=10 means GitHub gives 10 per page
+    # With 37 repos → 4 API calls (10+10+10+7)
+    repos = client.get_all_my_repos(per_page=10)
 
-    # Notice: me.created_at is a real datetime object, not a string
-    print(f"Type of created_at : {type(me.created_at)}")
-
-
-def demo_repo_model(client):
-    print("\n" + "=" * 50)
-    print("REPO MODEL")
-    print("=" * 50)
-    repo = client.get_repo("PrathameshDevkar", "mcp_a2a_multiagent")
-
-    print(f"Name        : {repo.name}")
-    print(f"Owner Login : {repo.owner.login}")     # nested model access
-    print(f"Private     : {repo.private}")
-    print(f"Created     : {repo.created_at.strftime('%d %b %Y')}")
-    print(f"Active      : {repo.is_active()}")     # method on model
-    print(f"Summary     : {repo.summary()}")        # method on model
-
-
-def demo_language_model(client):
-    print("\n" + "=" * 50)
-    print("LANGUAGES MODEL")
-    print("=" * 50)
-    langs = client.get_repo_languages("PrathameshDevkar", "mcp_a2a_multiagent")
-
-    print(f"Primary Language : {langs.primary_language()}")
-    print(f"Total Bytes      : {langs.total_bytes():,}")
-    print("Breakdown:")
-    for lang, pct in langs.percentages().items():
-        print(f"  {lang:<15} {pct}%")
-
-
-def demo_model_safety(client:GitHubClient):
-    print("\n" + "=" * 50)
-    print("MODEL SAFETY — TYPO CAUGHT IMMEDIATELY")
-    print("=" * 50)
-    repo = client.get_repo("PrathameshDevkar", "mcp_a2a_multiagent")
-
-    # With raw dict: repo["naem"] → KeyError deep in your code
-    # With Pydantic: repo.naem → AttributeError immediately
-    # Your editor even underlines it before you run the code
-    try:
-        _ = repo.nam           # typo — 'naem' doesn't exist
-    except AttributeError as e:
-        print(f"Typo caught: {e}")
-
-    # Optional field handled safely
-    # description can be None — no KeyError, no crash
-    desc = repo.description or "No description provided"
-    print(f"Description : {desc}")
-
-
-def demo_repo_list(client):
-    print("\n" + "=" * 50)
-    print("REPO LIST — TYPED OBJECTS")
-    print("=" * 50)
-    repos = client.get_my_repos(per_page=5)
+    print(f"\nTotal repos fetched: {len(repos)}")
+    print("\nAll repos:")
     for repo in repos:
-        # Each repo is a RepoModel — full attribute access + methods
-        print(repo.summary())
+        print(f"  → {repo.name}")
+
+
+def demo_lazy_pagination(client):
+    print("\n" + "=" * 50)
+    print("LAZY PAGINATION — PROCESS AS THEY ARRIVE")
+    print("=" * 50)
+
+    # Generator — fetches page 1 immediately, pages 2+ only when needed
+    repo_generator = client.get_repos_lazy(per_page=10)
+
+    print("Processing repos one by one:")
+    count = 0
+    for repo in repo_generator:
+        count += 1
+        print(f"  [{count}] {repo.name} | active: {repo.is_active()}")
+
+
+def demo_early_exit(client):
+    print("\n" + "=" * 50)
+    print("EARLY EXIT — STOP WHEN FOUND")
+    print("=" * 50)
+
+    target = "rag"
+    print(f"Looking for repos containing '{target}'...")
+
+    found = []
+    pages_checked = 0
+
+    # We manually drive the generator so we can track pages
+    for page_data in client.paginate("/user/repos",
+                                      params={"per_page": 10, "visibility": "all"}):
+        pages_checked += 1
+
+        for item in page_data:
+            repo = RepoModel.model_validate(item)
+            if target.lower() in repo.name.lower():
+                found.append(repo)
+
+        # Early exit — found enough, stop fetching more pages
+        if len(found) >= 2:
+            print(f"  Found enough results after {pages_checked} page(s). Stopping.")
+            break
+
+    print(f"\nMatching repos:")
+    for repo in found:
+        print(f"  → {repo.name}")
+
+
+def demo_search(client):
+    print("\n" + "=" * 50)
+    print("SEARCH ACROSS ALL REPOS")
+    print("=" * 50)
+
+    results = client.search_my_repos("rag", per_page=10)
+    print(f"Repos matching 'rag': {len(results)}")
+    for repo in results:
+        print(f"  → {repo.name} | {repo.summary()}")
+
+
+def demo_pagination_raw(client):
+    """
+    Shows raw pagination mechanics — what the Link header looks like.
+    """
+    print("\n" + "=" * 50)
+    print("RAW PAGINATION — SEE THE LINK HEADER")
+    print("=" * 50)
+
+    # Make a direct call so we can inspect the Link header
+    response = client.session.get(
+        f"{client.base_url}/user/repos",
+        headers=client._get_headers(),
+        params={"per_page": 5, "visibility": "all"},
+        timeout=client.timeout,
+    )
+
+    link_header = response.headers.get("Link", "No Link header")
+    print(f"Link Header:\n  {link_header}")
+    print(f"\nItems on this page : {len(response.json())}")
+
+    next_url = client._parse_next_url(link_header)
+    print(f"Next page URL      : {next_url}")
+
+
+#=======================================================================================
 
 
 # def main():
@@ -221,8 +324,14 @@ if __name__ == "__main__":
     # demo_catch_all(client)
     # demo_rate_limit_info(client)
 
-    demo_user_model(client)
-    demo_repo_model(client)
-    demo_language_model(client)
-    demo_model_safety(client)
-    demo_repo_list(client)
+    # demo_user_model(client)
+    # demo_repo_model(client)
+    # demo_language_model(client)
+    # demo_model_safety(client)
+    # demo_repo_list(client)
+
+    demo_pagination_raw(client)
+    demo_all_repos(client)
+    demo_lazy_pagination(client)
+    demo_early_exit(client)
+    demo_search(client)

@@ -99,6 +99,82 @@ class GitHubClient(BaseAPIClient):
             return response.status_code == 204
         else:
             return response
+
+    def get_all_my_repos(
+        self,
+        sort: str= "updated",
+        per_page: int= 10,
+        max_pages: int = 10 
+        )-> list[RepoModel]:
+            """
+            Fetches all your repos across multiple pages.
+            Reutrns list of repomodel object
+
+            per_page: Number of repos per API call
+            max_pages: safety limit on number of pages to fetch
+            """
+            all_repos=[]
+
+            for page_data in self.paginate(
+                path = "/user/repos",
+                params= {"sort":sort, "per_page":per_page, "visibility":"all"},
+                max_pages = max_pages
+            ):
+                "page_data is list of raw dicts. convert it into repomodel"
+                repos = [RepoModel.model_validate(r) for r in page_data]
+                all_repos.extend(repos)
+                logger.debug("Fetched page with %s repos, total so far %s repos", len(repos), len(all_repos))
+
+            return all_repos
+
+    def get_repos_lazily(
+        self,
+        sort: str = "updated",
+        per_page: int = 10,
+        max_pages: int = 10
+    ):
+        """
+        Generator version - yields one repo model at a time
+
+        Use this when:
+        - You want to process repo as they arrive (dont want to wait for all the pages)
+        - You mught stop earlier (eg. find what you looking for on page 2)
+        - You dont want thousands of repos in the memory
+
+        usage- 
+        for repo in client.get_repos_lazily:
+            if repo.name == "target_repo":
+                break #stop fetching immediately, no wasting API calls
+        """
+        for page_data in self.paginate(
+            path = "user/repos",
+            params = {"sort":sort, "per_page":per_page, "visibility":"all"},
+            max_pages = max_pages
+        ):
+            for item in page_data:
+                yield RepoModel.model_validate(item)
+
+    def search_my_repos(
+        self, 
+        keyword:str, 
+        sort: str = "updated",
+        per_page: int = 10,
+        max_pages: int = 10
+        ) -> list[RepoModel]:
+            """
+            Searches all the repos and returns the repos that has the keyword.
+            """
+            matches = []
+            for page_data in self.paginate(
+            path = "user/repos",
+            params = {"sort":sort, "per_page":per_page, "visibility":"all"},
+            max_pages = max_pages
+            ):
+                for item in page_data:
+                    repo = RepoModel.model_validate(item)
+                    if keyword.lower() in repo.name.lower():
+                        matches.append(repo)
+            return matches
     
 
 

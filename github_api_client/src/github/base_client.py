@@ -13,6 +13,9 @@ from .exceptions import (
     UnexpectedResponseError
 )
 
+import re
+
+
 load_dotenv()
 
 #logging gives timestamps, severity level and can be turned off in the production
@@ -240,3 +243,112 @@ class BaseAPIClient:
 
     def delete(self, path: str) -> requests.Response:
         return self.request("DELETE", path)
+
+    def _parse_next_url(self, link_header: str) -> str | None:
+        """
+        Parses github's link header to extract the 'next' page url.
+
+        github link header looks like this - 
+        https://api.github.com/user/repos?page=2>; rel="next",
+        https://api/github.com/user/repos?page=4>; rel="last
+
+        We use regx to find the URL where rel="next"
+        returns none if there is no next page
+        """
+
+        if not link_header:
+            return None
+
+        # Pattern: find <URL> followed by ; rel="next"
+        match = re.search(r'<([^>]+)>;\s*rel="next"', link_header)
+        if match:
+            return match.group(1)   # the URL inside < >
+        return None
+
+    def paginate(
+        self,
+        path: str,
+        params: dict= None,
+        max_pages: int = 10
+    ):
+        """
+        Generator that yields one page- list of items at a time.
+
+        Why a generator instead of list:
+        ---------------------------------------
+        A list would fetch all pages before returning anything.
+        If there are 100 pages then you would have to wait for 100 API calls.
+
+        A generator returns one page, yield immidiately, 
+        then fetches the next page ony when you ask for it.
+        You can stop at any page without fetching the rest.
+
+        max_pages: safety limit- prevents infinite loop if 
+                    API has bug and never stops sending next pages
+
+        path: API endpoint- ex. "user/repos"
+        params: query params ex. {"sort":"updated","per_page":10}     
+        """
+        current_params = dict(params or {})
+        pages_fetched=0
+        next_url = None # First request uses path, the subsequent uses next_url
+
+        while True:
+            pages_fetched +=1
+
+            if pages_fetched > max_pages:
+                logger.warning(
+                    "paginate() hit max_pages=%s limit on path=%s"
+                    "increase the max_pages limit if you want more",
+                    max_pages,
+                    path
+                )
+                break
+                
+            # First page: use (path+params)
+            # subsequent pages: use full next_url(it already has parmas baked in)
+            if next_url is None:
+                response = self.request("GET", path, params= current_params)
+            
+            else:
+                # for the next pages fetch full URL directly
+                # we bypass the self.request() as the URL is already complete
+                headers = self._get_headers
+                logger.debug(
+                    "Fetching the next page | page=%s | URL=%s",
+                    pages_fetched,
+                    next_url
+                )
+
+                try:
+                    response = self.session.get(
+                        next_url,
+                        headers = headers,
+                        timeout = self.timeout
+                    )
+
+                except Exception as e:
+                    raise NetworkError(f"Pagination failed: {str(e)}") from e
+
+                if not response.ok:
+                    self._handle_error_response(response)
+                
+            data = response.json()
+
+            logger.debug(
+                "Pages fetched= %s | items= %s | has_next=%s",
+                pages_fetched,
+                len(data) if isinstance(data, list) else 1,
+                "yes" if self._parse_next_url(response.headers.get("Link")) else "no"
+            )
+
+            # Yield pause here and gives the page to the caller
+            # Execution resumes from here when the caller asks for next page
+            yield data
+
+            # Check if there is another page
+            next_url = self._parse_next_url(response.headers.get("Link"))
+            if not next_url:
+                logger.debug("No more pages after page %s", pages_fetched)
+                break
+        
