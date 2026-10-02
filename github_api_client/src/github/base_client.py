@@ -1,3 +1,5 @@
+# from datetime import time
+import time
 import os
 import logging 
 import requests
@@ -10,10 +12,13 @@ from .exceptions import (
     ValidationError,
     RateLimitError,
     ServerError,
-    UnexpectedResponseError
+    UnexpectedResponseError,
+    MaxRetriesExceededError
+
 )
 
 import re
+import random
 
 
 load_dotenv()
@@ -24,6 +29,37 @@ logging.basicConfig(
     format = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+#Exceptions that are safe to retry
+RETRYABLE_EXCEPTIONS = (RateLimitError, ServerError, NetworkError)
+
+#Status code that are safe to retry
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+def _calculate_backoff(attempt: int, base_delay: float, max_delay: float) -> float:
+    """
+    Calculates how long to wait before the next retry.
+
+    Formula: min((base_delay * 2^attempt + jitter), max_delay)
+
+    attempt: which attempt just failed
+    base_delay: starting delay in seconds
+    max_delay: cap- never wait longer than this
+
+    jitter: random value added to the delay. Prevents multiple user retrying at the same time.
+
+
+    Examples with base_delay=1.0:
+    attempt 0 → min(1 * 1  + jitter, 60) → ~1-2s
+    attempt 1 → min(1 * 2  + jitter, 60) → ~2-3s
+    attempt 2 → min(1 * 4  + jitter, 60) → ~4-5s
+    attempt 3 → min(1 * 8  + jitter, 60) → ~8-9s
+    attempt 4 → min(1 * 16 + jitter, 60) → ~16-17s
+    attempt 5 → min(1 * 32 + jitter, 60) → ~32-33s
+    """
+    jitter = random.uniform(0,1)
+    delay = min(base_delay * (2**attempt) + jitter, max_delay)
+    return delay
 
 class BaseAPIClient:
     """
@@ -38,22 +74,36 @@ class BaseAPIClient:
     - Session gives you cookie persistance if needed
     """
 
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(
+        self, 
+        base_url: str, 
+        timeout: int = 30,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0
+        ):
         """
         base url: root url ,for example- https://api.github.com
         timeout: seconds to wait before giving up on the request    
                 always set this- without this the code can 
                 hang forever if the server stops responding.
+        max_retries: how many times to retry a failed request
+        base_delay: starting backoff delay in seconds
+        max_delay: maximum wait between retries
         """
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
         self.session = requests.Session()
 
         logging.debug(
-            "BaseAPIClient initialized | base_url= %s | timeout= %s",
+            "BaseAPIClient initialized | base_url= %s | timeout= %s | max_retries= %s",
             self.base_url,
-            self.timeout
+            self.timeout,
+            self.max_retries
         )
 
     def _get_headers(self) -> dict :
@@ -149,6 +199,35 @@ class BaseAPIClient:
                 response_body = response.text
             )
 
+    def _should_retry(self, exception: Exception) -> bool:
+        """
+        Returns true if this exception is worth trying,
+        otherwise false if the retry is pointless
+
+        This is the decision gate before every retry
+        """
+        return isinstance(exception, RETRYABLE_EXCEPTIONS)
+
+    def _get_wait_time(self, exception: Exception, attempt: int) -> float:
+        """
+        Decides how long to wait before the next retry.
+
+        For RateLimitError: use the Retry-After header value- the server
+        is telling is how long to wait.
+        """
+        if isinstance(exception, RateLimitError) and exception.retry_after:
+            wait = exception.retry_after + random.uniform(0,1)
+
+            logger.info(
+                "Rate limit hit - Using Retry-After header | wait= %.2fs",
+                wait    
+            )
+            return wait
+        
+        #ServerError or NetworkError use exponential backoff
+        wait = _calculate_backoff(attempt, self.base_delay, self.max_delay)
+        return wait
+
     def request(
         self,
         method: str,
@@ -158,7 +237,21 @@ class BaseAPIClient:
         extra_headers: dict = None
     ) -> requests.Response:
         """
-        Makes an HTTP request.
+        Makes an HTTP request with automatic retry logic.
+
+        Retry flow- 
+        attempt 1 -> faild with retryable error.
+            - Calculate wait time
+            - Log warning with attempt numebr and wait
+            - sleep (wait)
+        
+        attempt 2 -> fails again
+            - Calculate wait time (longer this time)
+            - sleep(wait)
+
+        attempt 3 -> fails again
+            - This was the last attempt
+            - Raise MaxRetriesExceededError with the last exception
 
         Arguments:
             method: GET, POST, PATCH, DELETE
@@ -178,56 +271,116 @@ class BaseAPIClient:
         # Merge default headers with any extra headers
         headers = {**self._get_headers(), **(extra_headers or {})}
 
-        logger.debug(
-            "Making request | method= %s | url= %s | params= %s",
-            method,
-            url,
-            params
-        )
+        last_exception = None
 
-        # Layer 1: Network Error
-        # These happen before the request reaches the server
-        try:
-            response = self.session.request(
-                method = method, 
-                url = url,
-                params = params,
-                headers = headers,
-                json = json,
-                timeout = self.timeout
-            )
-        except requests.exceptions.ConnectionError as e:
-            # No internet, DNS failure, sever connection refused
-            raise NetworkError(
-                f"Connection failed to {url}: {str(e)}"
-            ) from e
+        for attempt in range(self.max_retries+1):
+            is_last_attempt = attempt == self.max_retries
 
-        except requests.exceptions.Timeout as e:
-            # Server didnt respons within self.timeout seconds
-            raise NetworkError(
-                f"Request timed out after {self.timeout}s : {url}"
-            ) from e
+            try:
+                logger.debug(
+                    "Making request | method=%s | url=%s | params=%s | attempt=%s/%s",
+                    method,
+                    url,
+                    params,
+                    attempt+1,
+                    self.max_retries+1
+                )
+                # Layer 1: Network Error
+                # These happen before the request reaches the server
+                try:
+                    response = self.session.request(
+                        method = method, 
+                        url = url,
+                        params = params,
+                        headers = headers,
+                        json = json,
+                        timeout = self.timeout
+                    )
+                except requests.exceptions.ConnectionError as e:
+                    # No internet, DNS failure, sever connection refused
+                    raise NetworkError(
+                        f"Connection failed to {url}: {str(e)}"
+                    ) from e
 
-        except requests.exceptions.RequestException as e:
-            # Catch-all for any other requests library error
-            raise NetworkError(
-                f"Request failed: {str(e)}"
-            ) from e
-        
-        # layer 2: HTTP status code errors
-        # request reached the server - check if it is succesful
-    
-        logger.debug(
-            "Response received | status= %s | duration= %s",
-            response.status_code,
-            response.elapsed.total_seconds()
-        )
+                except requests.exceptions.Timeout as e:
+                    # Server didnt respons within self.timeout seconds
+                    raise NetworkError(
+                        f"Request timed out after {self.timeout}s : {url}"
+                    ) from e
 
-        # response.ok is true for 2xx status code
-        if not response.ok:
-            self._handle_error_response(response)
+                except requests.exceptions.RequestException as e:
+                    # Catch-all for any other requests library error
+                    raise NetworkError(
+                        f"Request failed: {str(e)}"
+                    ) from e
+                
+                # layer 2: HTTP status code errors
+                # request reached the server - check if it is succesful
+            
+                logger.debug(
+                    "Response received | status= %s | duration= %.3fs",
+                    response.status_code,
+                    response.elapsed.total_seconds()
+                )
 
-        return response
+                # response.ok is true for 2xx status code
+                if not response.ok:
+                    self._handle_error_response(response)
+
+                # Success----------------------------------
+                if attempt>0:
+                    logger.info(
+                        "Request succeeded after %s retries | url= %s",
+                        attempt,
+                        url
+                    )
+
+                return response
+            
+            except Exception as e:
+                last_exception = e
+
+                # Non-retryable errors (400,401,403,404)
+                # No point in retrying these, they wont fix themselves
+                if not self._should_retry(e):
+                    logger.error(
+                        "Non-retryable error | type= %s | url= %s",
+                        type(e).__name__,
+                        url
+                    )
+                    raise
+
+                # This was the last attempt- Give up
+                if is_last_attempt:
+                    logger.error(
+                        "All %s attempts failed | url= %s | last_error= %s",
+                        self.max_retries+1,
+                        url,
+                        e
+                    )
+
+                    raise MaxRetriesExceededError(
+                     f"Request to {url} failed after {self.max_retries} attempt",
+                     attempts = self.max_retries+1,
+                     last_exception = e,
+                     status_code = getattr(e, "status_code", None)
+                    ) from e
+
+                #calculate wait time and retry
+                wait = self._get_wait_time(e, attempt)
+                logger.warning(
+                    "Retryable error | type= %s | attempt= %s/%s | "
+                    "waiting= %.2fs | url= %s",
+                    e,
+                    attempt+1,
+                    self.max_retries+1,
+                    wait,
+                    url
+                )
+                time.sleep(wait)
+
+
+            
 
     # Convenience wrappers
     # These just calls the self.request with methods and arguments prefilled
@@ -309,11 +462,15 @@ class BaseAPIClient:
             # subsequent pages: use full next_url(it already has parmas baked in)
             if next_url is None:
                 response = self.request("GET", path, params= current_params)
+                logger.debug(
+                    "first page repsonse- Response: %s",
+                    response.json()
+                )
             
             else:
                 # for the next pages fetch full URL directly
                 # we bypass the self.request() as the URL is already complete
-                headers = self._get_headers
+                headers = self._get_headers()
                 logger.debug(
                     "Fetching the next page | page=%s | URL=%s",
                     pages_fetched,

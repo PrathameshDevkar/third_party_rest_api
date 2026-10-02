@@ -103,3 +103,27 @@ class UnexpectedResponseError(APIError):
     cathes anything that slips through the otehr cases.
     """
     pass
+
+class MaxRetriesExceededError(APIError):
+    """
+    Raised when a request has been retried max_retry times and still failed.
+
+    Wraps the last exception so the caller knows what kept failing.
+
+    last_exception: the actual exception from last attempt
+    attempts: how many times we tried
+    """
+    def __init__(self, message: str, attempts: int, last_exception: str, **kwargs):
+        super().__init__(message, **kwargs)
+        self.attempts= attempts
+        self.last_exception = last_exception
+
+    def __str__(self):
+        return(
+            f"{super().__str__()} | "
+            f"attempts: {self.attempts} | "
+            f"last error: {self.last_exception}"
+        )
+
+    
+

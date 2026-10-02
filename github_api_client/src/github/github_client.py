@@ -127,7 +127,7 @@ class GitHubClient(BaseAPIClient):
 
             return all_repos
 
-    def get_repos_lazily(
+    def get_repos_lazy(
         self,
         sort: str = "updated",
         per_page: int = 10,
